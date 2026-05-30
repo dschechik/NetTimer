@@ -411,6 +411,6 @@ AP mode: Net Timer / 192.168.4.1
 - NTP syncs at startup (waits up to 10 seconds) and then refreshes automatically in the background every hour via the SDK's built-in SNTP stack.
 - Sunset is calculated at startup (after NTP sync) and recalculated daily at midnight using the NOAA simplified algorithm. Accuracy is typically within 5–10 minutes.
 - DST transitions are handled automatically by the POSIX TZ string — no manual intervention needed when clocks change.
-- The relay defaults to **OFF** on every power-on regardless of its previous state.
+- The relay calculates what the state should be on saved events and sets it accordingly on every power-on regardless of its previous state.
 - If WiFi drops after initial connection the web interface and API become unavailable, but the relay and event schedule continue operating normally as long as time was synced at least once.
 - mDNS is only active in station mode. In AP mode use `192.168.4.1`.
