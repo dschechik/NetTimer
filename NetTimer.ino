@@ -36,6 +36,7 @@
 #include <Arduino_JSON.h>
 #include <time.h>
 #include <math.h>
+#include <limits.h>  // INT_MAX
 
 // ─── Pin definitions ──────────────────────────────────────────────────────────
 #define RELAY_PIN  0
@@ -70,6 +71,7 @@ char       cfgName[33] = "";                              // user-visible device
 bool       configured  = false;
 bool       relayState  = false;
 bool       ntpSynced   = false;
+unsigned long apBootTime = 0;  // non-zero when running in fallback AP mode
 int        sunsetHour  = 19;
 int        sunsetMin   = 30;
 bool       sunsetValid = false;
@@ -823,6 +825,76 @@ void handleApiStatus() {
   server.send(200, "application/json", JSON.stringify(doc));
 }
 
+// ─── Infer relay state from past events ───────────────────────
+// Scan all events and find the most recently elapsed one; set the relay
+// to match its action. This restores expected state after a power cycle.
+// For repeating events: compare minutes-since-start-of-week, wrapping
+// back up to a full week if needed. For one-shot events: compare epoch.
+void inferRelayState() {
+  if (!ntpSynced) return;
+
+  struct tm t = getLocalTime();
+  int nowWeekMin = (t.tm_wday * 1440) + (t.tm_hour * 60) + t.tm_min;
+
+  int bestMinsAgo = INT_MAX;
+  int bestAction  = -1;  // -1 means no candidate found
+
+  for (int i = 0; i < MAX_EVENTS; i++) {
+    TimerEvent& ev = events[i];
+    if (!ev.enabled) continue;
+
+    // Resolve trigger minute-of-day
+    int trigMin;
+    if (ev.useSunset) {
+      if (!sunsetValid) continue;
+      trigMin = sunsetHour * 60 + sunsetMin + ev.offsetMinutes;
+      if (trigMin < 0)     trigMin += 1440;
+      if (trigMin >= 1440) trigMin -= 1440;
+    } else {
+      trigMin = ev.offsetMinutes;
+    }
+
+    if (ev.repeat) {
+      for (int d = 0; d < 7; d++) {
+        if (!(ev.days & (1 << d))) continue;
+        int trigWeekMin = (d * 1440) + trigMin;
+        int minsAgo = nowWeekMin - trigWeekMin;
+        if (minsAgo < 0) minsAgo += 7 * 1440;  // wrap to previous week
+        if (minsAgo < bestMinsAgo) {
+          bestMinsAgo = minsAgo;
+          bestAction  = ev.turnOn ? 1 : 0;
+        }
+      }
+    } else {
+      // One-shot: has this date+time already passed?
+      struct tm evTm = {};
+      evTm.tm_year  = ev.year - 1900;
+      evTm.tm_mon   = ev.month - 1;
+      evTm.tm_mday  = ev.day;
+      evTm.tm_hour  = trigMin / 60;
+      evTm.tm_min   = trigMin % 60;
+      evTm.tm_isdst = -1;
+      time_t evEpoch  = mktime(&evTm);
+      time_t nowEpoch = time(nullptr);
+      if (evEpoch > nowEpoch) continue;  // future
+      int minsAgo = (int)((nowEpoch - evEpoch) / 60);
+      if (minsAgo < bestMinsAgo) {
+        bestMinsAgo = minsAgo;
+        bestAction  = ev.turnOn ? 1 : 0;
+      }
+    }
+  }
+
+  if (bestAction >= 0) {
+    bool inferred = (bestAction == 1);
+    setRelay(inferred);
+    Serial.print("Inferred relay state: ");
+    Serial.println(inferred ? "ON" : "OFF");
+  } else {
+    Serial.println("No past events found - relay left OFF");
+  }
+}
+
 // ─── Setup ────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
@@ -858,6 +930,8 @@ void setup() {
       struct tm t = getLocalTime();
       int sm = calcSunset(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon);
       if (sm >= 0) { sunsetHour=sm/60; sunsetMin=sm%60; sunsetValid=true; }
+      // Restore relay to state implied by most recent past event
+      inferRelayState();
       // Start mDNS so device is reachable at <hostname>.local
       char mdnsHost[33];
       makeMdnsHostname(mdnsHost, sizeof(mdnsHost));
@@ -873,6 +947,7 @@ void setup() {
     } else {
       Serial.println("\nWiFi failed, starting AP");
       configured = false;
+      apBootTime = millis();  // start 15-min reboot countdown
     }
   }
 
@@ -907,5 +982,10 @@ void loop() {
   MDNS.update();
   server.handleClient();
   unsigned long now = millis();
+  // Reboot after 15 minutes in fallback AP mode to retry WiFi
+  if (apBootTime && now - apBootTime > 15UL * 60UL * 1000UL) {
+    Serial.println("AP timeout - rebooting to retry WiFi");
+    ESP.restart();
+  }
   if (ntpSynced && now - lastCheck > 10000UL) { lastCheck = now; checkEvents(); }
 }
