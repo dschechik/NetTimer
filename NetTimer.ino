@@ -178,12 +178,20 @@ int calcSunset(int year, int month, int day, float lat, float lon) {
   double UT = T - lngHour;
   while (UT <   0.0) UT += 24.0;
   while (UT >= 24.0) UT -= 24.0;
-  // Derive the current UTC offset from the system timezone (handles DST)
+  // Derive UTC offset (including DST) by direct HH:MM subtraction.
+  // This avoids mktime() entirely (which always applies the current TZ
+  // and would double-count the offset) and tm_gmtoff (unavailable in
+  // ESP8266 newlib). gmtime_r and localtime_r both read the same epoch;
+  // their HH:MM difference is the true current offset including DST.
   time_t now = time(nullptr);
   struct tm utcTm, locTm;
-  gmtime_r(&now, &utcTm);
+  gmtime_r(&now,   &utcTm);
   localtime_r(&now, &locTm);
-  int tzOffsetMin = (int)(mktime(&locTm) - mktime(&utcTm)) / 60;
+  int tzOffsetMin = (locTm.tm_hour * 60 + locTm.tm_min)
+                  - (utcTm.tm_hour * 60 + utcTm.tm_min);
+  // Correct for midnight crossing (e.g. local=00:30, UTC=22:30 prev day)
+  if (tzOffsetMin >  720) tzOffsetMin -= 1440;
+  if (tzOffsetMin < -720) tzOffsetMin += 1440;
   double local = UT + (tzOffsetMin / 60.0);
   while (local <   0.0) local += 24.0;
   while (local >= 24.0) local -= 24.0;
