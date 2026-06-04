@@ -54,7 +54,7 @@ struct TimerEvent {
   uint8_t  month;
   uint8_t  day;
   bool     fired;
-  uint8_t  _pad[1];
+  bool     useSunrise;  // uses sunrise base instead of sunset
 };
 
 #define MAX_EVENTS 10
@@ -75,6 +75,9 @@ unsigned long apBootTime = 0;  // non-zero when running in fallback AP mode
 int        sunsetHour  = 19;
 int        sunsetMin   = 30;
 bool       sunsetValid = false;
+int        sunriseHour = 6;
+int        sunriseMin  = 30;
+bool       sunriseValid = false;
 
 Preferences      prefs;
 ESP8266WebServer server(80);
@@ -148,13 +151,13 @@ void clearAll() {
 // The (360-acos) form only works for western longitudes. For eastern
 // longitudes the 18h seed already falls after solar noon, so the complement
 // selects the wrong (sunrise) crossing.
-int calcSunset(int year, int month, int day, float lat, float lon) {
+int calcSunEvent(int year, int month, int day, float lat, float lon, bool sunrise) {
   int N1 = (int)floor(275.0 * month / 9.0);
   int N2 = (int)floor((month + 9.0) / 12.0);
   int N3 = (int)(1 + floor((year - 4.0 * floor(year / 4.0) + 2.0) / 3.0));
   int N  = N1 - (N2 * N3) + day - 30;
   double lngHour = lon / 15.0;
-  double t = N + ((18.0 - lngHour) / 24.0);
+  double t = N + ((sunrise ? 6.0 : 18.0) - lngHour) / 24.0;
   double M = (0.9856 * t) - 3.289;
   double L = M + (1.916 * sin(M * DEG_TO_RAD))
                + (0.020 * sin(2.0 * M * DEG_TO_RAD)) + 282.634;
@@ -172,8 +175,10 @@ int calcSunset(int year, int month, int day, float lat, float lon) {
               / (cosDec  *  cos((double)lat * DEG_TO_RAD));
   if (cosH >  1.0) return -1;
   if (cosH < -1.0) return -1;
-  // Sunset hour angle: acos gives the correct evening crossing for all longitudes
-  double H  = acos(cosH) * RAD_TO_DEG / 15.0;
+  // Sunrise: (360-acos)/15   Sunset: acos/15
+  double H  = sunrise
+    ? (360.0 - acos(cosH) * RAD_TO_DEG) / 15.0
+    : acos(cosH) * RAD_TO_DEG / 15.0;
   double T  = H + RA - (0.06571 * t) - 6.622;
   double UT = T - lngHour;
   while (UT <   0.0) UT += 24.0;
@@ -235,14 +240,20 @@ void checkEvents() {
   int nowMin = t.tm_hour*60 + t.tm_min;
   int nowSec = t.tm_sec;
   if (nowMin == 0 && nowSec < 30) {
-    int sm = calcSunset(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon);
+    int sm = calcSunEvent(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon, false);
     if (sm >= 0) { sunsetHour = sm/60; sunsetMin = sm%60; sunsetValid = true; }
+    int sr = calcSunEvent(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon, true);
+    if (sr >= 0) { sunriseHour = sr/60; sunriseMin = sr%60; sunriseValid = true; }
   }
   for (int i = 0; i < MAX_EVENTS; i++) {
     TimerEvent& ev = events[i];
     if (!ev.enabled) continue;
     int trig;
-    if (ev.useSunset) {
+    if (ev.useSunrise) {
+      if (!sunriseValid) continue;
+      trig = sunriseHour*60 + sunriseMin + ev.offsetMinutes;
+      if (trig < 0) trig += 1440; if (trig >= 1440) trig -= 1440;
+    } else if (ev.useSunset) {
       if (!sunsetValid) continue;
       trig = sunsetHour*60 + sunsetMin + ev.offsetMinutes;
       if (trig < 0) trig += 1440; if (trig >= 1440) trig -= 1440;
@@ -349,6 +360,10 @@ void handleRoot() {
   server.sendContent(relayState ? "ron'>ON" : "roff'>OFF");
   server.sendContent("</span></p>");
 
+  if (sunriseValid) {
+    snprintf(tmp, sizeof(tmp), "<p><b>Sunrise:</b> %02d:%02d</p>", sunriseHour, sunriseMin);
+    server.sendContent(tmp);
+  }
   if (sunsetValid) {
     snprintf(tmp, sizeof(tmp), "<p><b>Sunset:</b> %02d:%02d</p>", sunsetHour, sunsetMin);
     server.sendContent(tmp);
@@ -379,12 +394,12 @@ void sendEventDescription(int i) {
   TimerEvent& ev = events[i];
   char buf[40];
   server.sendContent(ev.turnOn ? "<span class='badge on'>ON</span> " : "<span class='badge off'>OFF</span> ");
-  if (ev.useSunset) {
+  if (ev.useSunrise) {
+    if (ev.offsetMinutes == 0) server.sendContent("at sunrise");
+    else { snprintf(buf, sizeof(buf), "%+d min from sunrise", ev.offsetMinutes); server.sendContent(buf); }
+  } else if (ev.useSunset) {
     if (ev.offsetMinutes == 0) server.sendContent("at sunset");
-    else {
-      snprintf(buf, sizeof(buf), "%+d min from sunset", ev.offsetMinutes);
-      server.sendContent(buf);
-    }
+    else { snprintf(buf, sizeof(buf), "%+d min from sunset", ev.offsetMinutes); server.sendContent(buf); }
   } else {
     snprintf(buf, sizeof(buf), "at %02d:%02d", ev.offsetMinutes/60, ev.offsetMinutes%60);
     server.sendContent(buf);
@@ -430,9 +445,10 @@ void handleSet() {
       memset(&ev, 0, sizeof(TimerEvent));
       ev.enabled   = true;
       ev.turnOn    = (server.arg("action") == "1");
-      ev.useSunset = (server.arg("timetype") == "sunset");
-      ev.repeat    = (server.arg("sched") == "repeat");
-      if (ev.useSunset) {
+      ev.useSunset  = (server.arg("timetype") == "sunset");
+      ev.useSunrise = (server.arg("timetype") == "sunrise");
+      ev.repeat     = (server.arg("sched") == "repeat");
+      if (ev.useSunset || ev.useSunrise) {
         ev.offsetMinutes = server.arg("sunoffset").toInt();
       } else {
         ev.offsetMinutes = server.arg("hour").toInt()*60 + server.arg("minute").toInt();
@@ -493,17 +509,21 @@ void handleSet() {
     "</select></div></div>"
     "<div class='row'><div><label>Time type</label>"
     "<select name='timetype' onchange=\""
-      "document.getElementById('abt').style.display=this.value=='abs'?'flex':'none';"
-      "document.getElementById('snt').style.display=this.value=='sunset'?'block':'none'\">"
+      "var s=this.value;"
+      "document.getElementById('abt').style.display=s=='abs'?'flex':'none';"
+      "var show=s=='sunset'||s=='sunrise';"
+      "document.getElementById('snt').style.display=show?'block':'none';"
+      "document.getElementById('snl').textContent=s=='sunrise'?'Offset from sunrise (min)':'Offset from sunset (min)';\">"
     "<option value='abs'>Specific time</option>"
     "<option value='sunset'>Sunset offset</option>"
+    "<option value='sunrise'>Sunrise offset</option>"
     "</select></div></div>"
     "<div id='abt' class='row'>"
     "<div><label>Hour (0-23)</label><input type='number' name='hour' min='0' max='23' value='18'></div>"
     "<div><label>Minute</label><input type='number' name='minute' min='0' max='59' value='0'></div>"
     "</div>"
     "<div id='snt' style='display:none'>"
-    "<label>Offset from sunset (min, negative=before)</label>"
+    "<label id='snl'>Offset from sunset (min, negative=before)</label>"
     "<input type='number' name='sunoffset' value='0'>"
     "</div>"
     "<div id='rpt'><label>Days</label><div class='row'>"
@@ -696,11 +716,20 @@ void handleApiAddEvent() {
   }
   TimerEvent& ev = events[slot];
   memset(&ev, 0, sizeof(TimerEvent));
-  ev.enabled   = true;
-  ev.turnOn    = (String((const char*)doc["action"]) == "on");
-  ev.useSunset = (String((const char*)doc["time_type"]) == "sunset");
-  ev.repeat    = (String((const char*)doc["schedule"]) != "once");
-  if (ev.useSunset) {
+  ev.enabled = true;
+  // Safe string extraction: (const char*)JSONVar can return nullptr
+  // if the key is missing, which crashes String() on ESP8266.
+  String timeType = JSON.typeof(doc["time_type"]) == "string"
+    ? String((const char*)doc["time_type"]) : String("");
+  String schedType = JSON.typeof(doc["schedule"]) == "string"
+    ? String((const char*)doc["schedule"]) : String("");
+  String actionStr = JSON.typeof(doc["action"]) == "string"
+    ? String((const char*)doc["action"]) : String("");
+  ev.turnOn     = (actionStr == "on");
+  ev.useSunset  = (timeType == "sunset");
+  ev.useSunrise = (timeType == "sunrise");
+  ev.repeat     = (schedType != "once");
+  if (ev.useSunset || ev.useSunrise) {
     ev.offsetMinutes = doc.hasOwnProperty("sun_offset") ? (int)doc["sun_offset"] : 0;
   } else {
     int h = doc.hasOwnProperty("hour")   ? (int)doc["hour"]   : 0;
@@ -813,6 +842,10 @@ void handleApiStatus() {
   doc["ntp_synced"] = ntpSynced;
   doc["epoch"]      = (long)time(nullptr);
   doc["local_time"] = tbuf;
+  if (sunriseValid) {
+    char rise[8]; snprintf(rise, sizeof(rise), "%02d:%02d", sunriseHour, sunriseMin);
+    doc["sunrise"] = rise;
+  }
   if (sunsetValid) {
     char sun[8]; snprintf(sun, sizeof(sun), "%02d:%02d", sunsetHour, sunsetMin);
     doc["sunset"] = sun;
@@ -823,7 +856,8 @@ void handleApiStatus() {
     JSONVar o;
     o["slot"]       = i;
     o["action"]     = events[i].turnOn ? "on" : "off";
-    o["use_sunset"] = events[i].useSunset;
+    o["use_sunrise"] = events[i].useSunrise;
+    o["use_sunset"]  = events[i].useSunset;
     o["repeat"]     = events[i].repeat;
     o["offset_min"] = events[i].offsetMinutes;
     arr[cnt++]      = o;
@@ -853,7 +887,12 @@ void inferRelayState() {
 
     // Resolve trigger minute-of-day
     int trigMin;
-    if (ev.useSunset) {
+    if (ev.useSunrise) {
+      if (!sunriseValid) continue;
+      trigMin = sunriseHour * 60 + sunriseMin + ev.offsetMinutes;
+      if (trigMin < 0)     trigMin += 1440;
+      if (trigMin >= 1440) trigMin -= 1440;
+    } else if (ev.useSunset) {
       if (!sunsetValid) continue;
       trigMin = sunsetHour * 60 + sunsetMin + ev.offsetMinutes;
       if (trigMin < 0)     trigMin += 1440;
@@ -936,8 +975,10 @@ void setup() {
       Serial.println(ntpSynced ? " OK" : " timeout");
       Serial.print("TZ string: "); Serial.println(cfgTz);
       struct tm t = getLocalTime();
-      int sm = calcSunset(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon);
+      int sm = calcSunEvent(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon, false);
       if (sm >= 0) { sunsetHour=sm/60; sunsetMin=sm%60; sunsetValid=true; }
+      int sr = calcSunEvent(t.tm_year+1900, t.tm_mon+1, t.tm_mday, cfgLat, cfgLon, true);
+      if (sr >= 0) { sunriseHour=sr/60; sunriseMin=sr%60; sunriseValid=true; }
       // Restore relay to state implied by most recent past event
       inferRelayState();
       // Start mDNS so device is reachable at <hostname>.local
