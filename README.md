@@ -1,6 +1,7 @@
+[NetTimer_README.md](https://github.com/user-attachments/files/28585400/NetTimer_README.md)
 # NetTimer — ESP8266 Network Electrical Timer
 
-A WiFi-connected relay timer for the ESP8266 ESP-01S with a web interface, JSON API, NTP time sync, sunset-based scheduling, DST-aware timezones, and mDNS discovery.
+A WiFi-connected relay timer for the ESP8266 ESP-01S with a web interface, JSON API, NTP time sync, sunrise/sunset-based scheduling, DST-aware timezones, and mDNS discovery.
 
 ---
 
@@ -46,7 +47,7 @@ Only one library needs to be installed via the Library Manager:
 |---------|--------|-------------|
 | **Arduino_JSON** | Arduino | Library Manager |
 
-Everything else is bundled with the ESP8266 Arduino core and requires no separate installation:
+Everything else is bundled with the ESP8266 Arduino core:
 
 | Library | Purpose |
 |---------|---------|
@@ -66,9 +67,9 @@ Everything else is bundled with the ESP8266 Arduino core and requires no separat
 3. Connect your phone or laptop to the WiFi network **"Net Timer"**.
 4. Open `http://192.168.4.1` in a browser.
 5. Go to **Config** and fill in:
-   - Device Name (optional — used in page titles and mDNS hostname)
+   - Device Name (optional)
    - WiFi SSID and password
-   - Latitude and longitude (for sunset calculation)
+   - Latitude and longitude (for sunrise/sunset calculation)
    - Timezone (select from dropdown)
 6. Click **Save & Reboot**. The device joins your network.
 7. The serial console prints the assigned IP address and mDNS hostname:
@@ -78,46 +79,46 @@ Everything else is bundled with the ESP8266 Arduino core and requires no separat
    ```
 8. Either address works in a browser.
 
+> **Note:** If the device is configured but fails to connect to WiFi, it falls back to AP mode for 15 minutes, then reboots automatically to retry.
+
 ---
 
 ## Web Interface
 
 | URL | Description |
 |-----|-------------|
-| `/` | Status — current time, relay state, sunset, manual relay toggle |
+| `/` | Status — current time, sunrise/sunset, relay state, manual relay toggle |
 | `/set` | Events — view, add, and delete timer events |
 | `/config` | Device name, WiFi credentials, location, timezone |
 | `/reset` | Factory reset — erases all settings and events |
 
 ### Status Page
 
-Shows the current local time and date, relay state (ON/OFF), today's calculated sunset time, configured location, and NTP sync status. Two buttons allow immediate manual relay control independent of the event schedule.
+Shows the current local time and date, today's calculated sunrise and sunset times, relay state (ON/OFF), configured location, and NTP sync status. Two buttons allow immediate manual relay control.
 
 ### Events Page
 
-Lists all active events with their action, time, and schedule. Each event has a Delete button. The Add Event form at the bottom covers all combinations:
+Lists all active events. The Add Event form covers all combinations:
 
 - **Action** — Turn ON or Turn OFF
 - **Schedule** — Repeat (selected days of week) or One-time (specific date)
-- **Time type** — Specific time (HH:MM) or Sunset offset (±minutes)
+- **Time type** — Specific time (HH:MM), Sunset offset, or Sunrise offset
 
 ### Config Page
 
 | Field | Description |
 |-------|-------------|
-| Device Name | Up to 32 characters. Appears in page `<title>` and `<h1>`, used as the mDNS hostname (spaces become hyphens, special characters dropped). Optional — leave blank for plain "NetTimer". |
+| Device Name | Up to 32 characters. Appears in page titles and as the mDNS hostname. Optional. |
 | WiFi SSID | Network name to join |
-| WiFi Password | Stored as raw bytes to preserve all special characters |
-| Latitude / Longitude | Decimal degrees. Used for sunset calculation. Positive = N/E, negative = S/W. |
-| Timezone | Dropdown of 22 common zones with full DST rules (see below) |
-
-Saving the config always triggers a reboot.
+| WiFi Password | Stored as raw bytes — all special characters preserved |
+| Latitude / Longitude | Decimal degrees. Positive = N/E, negative = S/W. |
+| Timezone | Dropdown of 22 common zones with full DST rules |
 
 ---
 
 ## Timezone Reference
 
-Timezones are stored as POSIX TZ strings, which encode both the UTC offset and DST transition rules. The SDK applies them natively — clock changes happen automatically.
+Timezones are stored as POSIX TZ strings encoding both the UTC offset and DST rules. The SDK applies clock changes automatically.
 
 | Label | POSIX String | DST |
 |-------|-------------|-----|
@@ -148,15 +149,7 @@ Timezones are stored as POSIX TZ strings, which encode both the UTC offset and D
 
 ## mDNS / `.local` Hostname
 
-When connected to WiFi, the device advertises itself via mDNS so it can be reached by name instead of IP address.
-
-The hostname is derived from the **Device Name** field:
-- Converted to lowercase
-- Spaces become hyphens
-- All other non-alphanumeric characters are dropped
-- Falls back to `net-timer` if the result is empty
-
-Examples:
+When connected to WiFi the device advertises itself via mDNS. The hostname is derived from the Device Name field: lowercase, spaces become hyphens, other non-alphanumeric characters dropped. Falls back to `net-timer` if empty.
 
 | Device Name | mDNS Hostname |
 |-------------|--------------|
@@ -164,13 +157,7 @@ Examples:
 | Garage | `http://garage.local` |
 | *(empty)* | `http://net-timer.local` |
 
-**Platform support:**
-- macOS, iOS — works natively
-- Windows 10+ — works with Bonjour installed (included with iTunes)
-- Linux — works on most desktop distributions
-- Android — support varies by version; use the IP address as a fallback
-
-mDNS only works in station mode. In AP mode the device is always at `192.168.4.1`.
+Works natively on macOS, iOS, and most Linux desktops. Requires Bonjour on Windows 10+. mDNS is inactive in AP mode — use `192.168.4.1` instead.
 
 ---
 
@@ -182,7 +169,8 @@ mDNS only works in station mode. In AP mode the device is always at `192.168.4.1
 |-----------|---------|
 | Action | Turn ON / Turn OFF |
 | Schedule | Repeat (days of week) / One-time (specific date) |
-| Time type | Specific time (HH:MM) / Sunset offset (±minutes from sunset) |
+| Time type | Specific time (HH:MM) / Sunset offset / Sunrise offset |
+| Offset | Minutes from sunrise or sunset — negative fires before, positive fires after |
 | Days | Any combination of Sun–Sat (repeat mode only) |
 
 ### Examples
@@ -191,10 +179,22 @@ mDNS only works in station mode. In AP mode the device is always at `192.168.4.1
 |------|---------|
 | Turn ON every Mon & Thu at 07:00 | Action=ON, Repeat, Days=[Mon,Thu], Time=07:00 |
 | Turn OFF 30 min after sunset, daily | Action=OFF, Repeat, Days=[all], Sunset offset=+30 |
-| Turn ON 15 min before sunset, weekdays | Action=ON, Repeat, Days=[Mon–Fri], Sunset offset=−15 |
+| Turn ON 15 min before sunset | Action=ON, Repeat, Days=[all], Sunset offset=−15 |
+| Turn ON at sunrise every weekday | Action=ON, Repeat, Days=[Mon–Fri], Sunrise offset=0 |
+| Turn OFF 20 min after sunrise | Action=OFF, Repeat, Days=[all], Sunrise offset=+20 |
 | Turn ON once on 25 Dec at 18:00 | Action=ON, One-time, Date=2025-12-25, Time=18:00 |
 
-One-shot events are automatically disabled after they fire and will not repeat.
+One-shot events are automatically disabled after firing.
+
+---
+
+## Sunrise/Sunset Calculation
+
+Both sunrise and sunset are calculated using the NOAA simplified solar algorithm. They are computed at startup (after NTP sync) and recalculated daily at midnight. Accuracy is typically within 5–10 minutes of the actual time.
+
+The current UTC offset — including any DST adjustment — is derived at calculation time by comparing `gmtime_r` and `localtime_r` on the same epoch, so sunrise and sunset times automatically reflect DST changes without any intervention.
+
+Sunrise and sunset times are displayed on the status page and are included in the `/api/status` response.
 
 ---
 
@@ -217,7 +217,7 @@ All endpoints accept and return `application/json`. Slot numbers are 0–9.
   "days":      [1, 3, 5]
 }
 ```
-`days` is an array of integers: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat. Omit or send `[]` to repeat every day.
+`days`: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat. Omit or send `[]` for every day.
 
 **Repeat event (sunset-relative):**
 ```json
@@ -229,7 +229,18 @@ All endpoints accept and return `application/json`. Slot numbers are 0–9.
   "days":       [0, 1, 2, 3, 4, 5, 6]
 }
 ```
-`sun_offset` is minutes from sunset — negative fires before sunset.
+
+**Repeat event (sunrise-relative):**
+```json
+{
+  "action":     "on",
+  "time_type":  "sunrise",
+  "sun_offset": -15,
+  "schedule":   "repeat",
+  "days":       [1, 2, 3, 4, 5]
+}
+```
+`sun_offset` is minutes from sunrise or sunset — negative fires before, positive fires after.
 
 **One-time event:**
 ```json
@@ -250,12 +261,6 @@ All endpoints accept and return `application/json`. Slot numbers are 0–9.
 { "ok": true, "slot": 3 }
 ```
 
-**Errors:**
-```json
-{ "error": "No free slots" }
-{ "error": "Missing year/month/day for once schedule" }
-```
-
 ---
 
 ### `DELETE /api/event/delete` — Delete a timer event
@@ -269,22 +274,12 @@ All endpoints accept and return `application/json`. Slot numbers are 0–9.
 { "ok": true, "slot": 3 }
 ```
 
-**Errors:**
-```json
-{ "error": "slot must be 0-9" }
-{ "error": "Slot already empty" }
-```
-
 ---
 
 ### `POST /api/relay` — Set relay state immediately
 
 ```json
 { "state": "on" }
-```
-or
-```json
-{ "state": "off" }
 ```
 
 **Response:**
@@ -303,31 +298,35 @@ or
   "ntp_synced":  true,
   "epoch":       1749999999,
   "local_time":  "2025-06-15T20:28:05",
+  "sunrise":     "05:42",
   "sunset":      "19:38",
   "event_count": 2,
   "events": [
-    { "slot": 0, "action": "on",  "use_sunset": false, "repeat": true,  "offset_min": 420 },
-    { "slot": 1, "action": "off", "use_sunset": true,  "repeat": true,  "offset_min": 30  }
+    {
+      "slot": 0, "action": "on",
+      "use_sunrise": false, "use_sunset": false,
+      "repeat": true, "offset_min": 420
+    },
+    {
+      "slot": 1, "action": "off",
+      "use_sunrise": false, "use_sunset": true,
+      "repeat": true, "offset_min": 30
+    }
   ]
 }
 ```
 
-`name` is the configured device name, or `"NetTimer"` if none is set. `sunset` is omitted if it has not been calculated yet (appears after first midnight or on first boot after NTP sync).
+`sunrise` and `sunset` are omitted until calculated after NTP sync.
 
 ---
 
 ### `POST /api/event` — Legacy one-time event (backwards compatible)
 
-Kept for compatibility with earlier integrations. Prefer `/api/event/add` for new work.
-
 ```json
 {
   "action": "on",
-  "year":   2025,
-  "month":  6,
-  "day":    15,
-  "hour":   20,
-  "minute": 30
+  "year": 2025, "month": 6, "day": 15,
+  "hour": 20,   "minute": 30
 }
 ```
 
@@ -336,15 +335,20 @@ Kept for compatibility with earlier integrations. Prefer `/api/event/add` for ne
 ### Example curl commands
 
 ```bash
-# Add a repeat event: ON at 07:30 Mon/Wed/Fri
+# ON at 07:30 Mon/Wed/Fri
 curl -X POST http://kitchen-timer.local/api/event/add \
      -H 'Content-Type: application/json' \
      -d '{"action":"on","time_type":"abs","hour":7,"minute":30,"schedule":"repeat","days":[1,3,5]}'
 
-# Add a sunset event: OFF 30 min after sunset, daily
+# OFF 30 min after sunset, daily
 curl -X POST http://kitchen-timer.local/api/event/add \
      -H 'Content-Type: application/json' \
      -d '{"action":"off","time_type":"sunset","sun_offset":30,"schedule":"repeat"}'
+
+# ON 15 min before sunrise, weekdays
+curl -X POST http://kitchen-timer.local/api/event/add \
+     -H 'Content-Type: application/json' \
+     -d '{"action":"on","time_type":"sunrise","sun_offset":-15,"schedule":"repeat","days":[1,2,3,4,5]}'
 
 # Delete slot 2
 curl -X DELETE http://kitchen-timer.local/api/event/delete \
@@ -364,25 +368,23 @@ curl http://kitchen-timer.local/api/status
 
 ## Storage Layout (Preferences)
 
-Uses the ESP8266 `Preferences` library — key-value store, wear-levelled flash. No EEPROM address arithmetic required. All string fields are stored as raw bytes (`putBytes`/`getBytes`) to preserve special characters reliably, sized to `strlen + 1` (not the full buffer) to prevent off-by-one null-termination errors.
+Uses the ESP8266 `Preferences` library. All strings stored as `strlen+1` bytes to prevent off-by-one null-termination errors.
 
 | Namespace | Key | Type | Content |
 |-----------|-----|------|---------|
-| `cfg` | `ssid` | bytes | WiFi SSID (up to 32 chars + null) |
-| `cfg` | `pass` | bytes | WiFi password (up to 64 chars + null) |
+| `cfg` | `ssid` | bytes | WiFi SSID |
+| `cfg` | `pass` | bytes | WiFi password |
 | `cfg` | `lat` | float | Latitude |
 | `cfg` | `lon` | float | Longitude |
-| `cfg` | `tz` | bytes | POSIX TZ string (up to 47 chars + null) |
-| `cfg` | `name` | bytes | Device name (up to 32 chars + null) |
-| `ev0` … `ev9` | `d` | bytes | Raw `TimerEvent` struct (one namespace per slot) |
+| `cfg` | `tz` | bytes | POSIX TZ string |
+| `cfg` | `name` | bytes | Device name |
+| `ev0`…`ev9` | `d` | bytes | Raw `TimerEvent` struct (12 bytes, one namespace per slot) |
 
-Factory reset clears all namespaces via `prefs.clear()`.
+The `TimerEvent` struct uses the former alignment padding byte for the `useSunrise` flag, so the stored size is unchanged and existing saved events load correctly.
 
 ---
 
 ## Serial Output Reference
-
-On boot the serial port (115200 baud) prints:
 
 ```
 Connecting to: MyNetwork:
@@ -391,26 +393,28 @@ Using Password: ••••••••:
 IP: 192.168.1.45
 Waiting for NTP..... OK
 TZ string: EST5EDT,M3.2.0,M11.1.0
+Inferred relay state: OFF
 mDNS: http://kitchen-timer.local
 HTTP server started
 ```
 
-If WiFi fails after the 50-second timeout the device falls back to AP mode and prints:
-
+If WiFi fails after the 50-second timeout:
 ```
 WiFi failed, starting AP
 AP mode: Net Timer / 192.168.4.1
 ```
+The device reboots automatically after 15 minutes to retry WiFi.
 
 ---
 
 ## Operational Notes
 
-- Events are checked every 10 seconds. Any event whose scheduled minute matches the current local minute will fire within 10 seconds of the scheduled time.
-- One-shot events are automatically disabled after firing and will not trigger again.
-- NTP syncs at startup (waits up to 10 seconds) and then refreshes automatically in the background every hour via the SDK's built-in SNTP stack.
-- Sunset is calculated at startup (after NTP sync) and recalculated daily at midnight using the NOAA simplified algorithm. Accuracy is typically within 5–10 minutes.
-- DST transitions are handled automatically by the POSIX TZ string — no manual intervention needed when clocks change.
-- The relay calculates what the state should be on saved events and sets it accordingly on every power-on regardless of its previous state.
-- If WiFi drops after initial connection the web interface and API become unavailable, but the relay and event schedule continue operating normally as long as time was synced at least once.
+- Events are checked every 10 seconds and fire within 10 seconds of their scheduled minute.
+- One-shot events disable themselves after firing.
+- NTP syncs at startup and refreshes automatically in the background.
+- Sunrise and sunset are calculated at startup and recalculated daily at midnight.
+- Both sunrise/sunset calculations are DST-aware via the POSIX TZ string.
+- On power-on, the relay is inferred from the most recently elapsed scheduled event, restoring the expected state after a power cycle. If no past events exist the relay defaults to OFF.
+- The relay always initialises to OFF at the hardware level before inference runs.
+- If WiFi drops after connection, the web interface and API become unavailable but the relay and event schedule continue operating.
 - mDNS is only active in station mode. In AP mode use `192.168.4.1`.
