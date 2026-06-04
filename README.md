@@ -9,7 +9,7 @@ A WiFi-connected relay timer for the ESP8266 ESP-01S with a web interface, JSON 
 
 | Component | Notes |
 |-----------|-------|
-| [HiLetgo ESP8266 ESP-01S Relay Module](https://www.amazon.com/HiLetgo-ESP8266-Module-Control-Automation/dp/B071LMSLRW) | Relay + ESP-01S on one board |
+| [ESP8266 ESP-01S Relay Module](https://aliexpress.com/item/1005006770241321.html) | Relay + ESP-01S on one board |
 | 5 V USB power supply | 500 mA or more |
 | USB–to–TTL adapter | For initial flashing only |
 
